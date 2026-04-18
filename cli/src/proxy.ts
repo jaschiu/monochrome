@@ -1,32 +1,48 @@
 /**
- * SOCKS5 proxy pool with rate-limit-based rotation.
+ * HTTP client pool for the CLI. Issues all requests through curl-impersonate
+ * via cuimp, providing TLS fingerprint diversity and optional SOCKS5 proxying.
  *
- * Lazily loads `socks` (npm) and `undici` (bundled in Node 22+, or npm)
- * so the rest of the CLI works without those packages when proxying is not used.
+ * Overrides globalThis.fetch so every HTTP request routes through the
+ * impersonated curl binary; proxy rotation is rate-limit-aware and per-service.
  */
 
-import tls from 'node:tls';
 import { log } from './log.js';
+import type { CuimpHttp, CuimpOptions, CuimpRequestConfig } from 'cuimp';
 
-type SocksClientType = typeof import('socks').SocksClient;
-type UndiciAgentType = typeof import('undici').Agent;
+type CreateCuimpHttpFn = typeof import('cuimp').createCuimpHttp;
 
-let SocksClient: SocksClientType | null = null;
-let UndiciAgent: UndiciAgentType | null = null;
+let createCuimpHttp: CreateCuimpHttpFn | null = null;
 
-async function ensureDeps(): Promise<void> {
-    if (SocksClient && UndiciAgent) return;
+async function ensureCuimp(): Promise<void> {
+    if (createCuimpHttp) return;
     try {
-        ({ SocksClient } = await import('socks'));
+        ({ createCuimpHttp } = await import('cuimp'));
     } catch {
-        throw new Error('SOCKS5 proxy requires the "socks" package.  Install:  npm i socks');
-    }
-    try {
-        ({ Agent: UndiciAgent } = await import('undici'));
-    } catch {
-        throw new Error('SOCKS5 proxy requires Node.js 22+ or the "undici" package.');
+        throw new Error('cuimp package is required.  Install:  npm i cuimp');
     }
 }
+
+const IMPERSONATE_TARGETS = [
+    'chrome116',
+    'chrome119',
+    'chrome120',
+    'chrome123',
+    'chrome124',
+    'chrome131',
+    'chrome136',
+    'firefox133',
+    'firefox135',
+    'firefox147',
+    'edge99',
+    'edge101',
+];
+
+const SILENT_LOGGER = {
+    info() {},
+    warn() {},
+    error() {},
+    debug() {},
+};
 
 function shuffle<T>(arr: T[]): T[] {
     for (let i = arr.length - 1; i > 0; i--) {
@@ -42,10 +58,59 @@ interface ProxyEntry {
     rateLimitedUntil: Map<string, number>;
 }
 
+/**
+ * Wraps a cuimp stream response in a fetch-API-compatible Response-like object.
+ */
+class CuimpResponse {
+    status: number;
+    statusText: string;
+    ok: boolean;
+    private _rawBody: Buffer;
+    private _headers: Record<string, string>;
+
+    constructor(streamRes: { status: number; statusText?: string; rawBody?: Buffer; headers?: Record<string, string> }) {
+        this.status = streamRes.status;
+        this.statusText = streamRes.statusText || '';
+        this.ok = this.status >= 200 && this.status < 300;
+        this._rawBody = streamRes.rawBody || Buffer.alloc(0);
+        this._headers = streamRes.headers || {};
+    }
+
+    get headers() {
+        const h = this._headers;
+        return {
+            get(name: string): string | null {
+                const lower = name.toLowerCase();
+                for (const [k, v] of Object.entries(h)) {
+                    if (k.toLowerCase() === lower) return v;
+                }
+                return null;
+            },
+            forEach(fn: (value: string, key: string) => void): void {
+                for (const [k, v] of Object.entries(h)) fn(v, k);
+            },
+        };
+    }
+
+    async json<T = unknown>(): Promise<T> {
+        return JSON.parse(this._rawBody.toString('utf-8')) as T;
+    }
+
+    async text(): Promise<string> {
+        return this._rawBody.toString('utf-8');
+    }
+
+    async arrayBuffer(): Promise<ArrayBuffer> {
+        const buf = this._rawBody;
+        return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    }
+}
+
 class ProxyPool {
     proxies: ProxyEntry[] = [];
     currentIndex = 0;
-    private _dispatcher: InstanceType<UndiciAgentType> | null = null;
+    private _client: CuimpHttp | null = null;
+    private _currentTarget: string | null = null;
     private _originalFetch: typeof fetch | null = null;
     private _installed = false;
 
@@ -73,6 +138,7 @@ class ProxyPool {
 
     /**
      * Rotate to the next non-rate-limited proxy for the given service.
+     * Also switches browser identity.
      * @returns ms to wait if ALL proxies are rate-limited, or 0 on success.
      */
     rotate(service: string = 'default'): number {
@@ -83,7 +149,7 @@ class ProxyPool {
             const idx = (this.currentIndex + i) % this.proxies.length;
             if ((this.proxies[idx].rateLimitedUntil.get(service) || 0) <= now) {
                 this.currentIndex = idx;
-                this._rebuildDispatcher();
+                this._rebuildClient();
                 log.info(`  Rotated → ${this.proxies[idx].host}`);
                 return 0;
             }
@@ -100,78 +166,113 @@ class ProxyPool {
             }
         }
         this.currentIndex = minIdx;
-        this._rebuildDispatcher();
+        this._rebuildClient();
         return Math.max(minWait, 0);
+    }
+
+    /** Clear cookies on the current cuimp client. */
+    clearCookies(): void {
+        if (this._client && typeof (this._client as any).clearCookies === 'function') {
+            (this._client as any).clearCookies();
+        }
+    }
+
+    /** Switch to a new random browser identity (destroys + rebuilds cuimp client). */
+    newIdentity(): void {
+        this._rebuildClient();
     }
 
     /* ── internals ───────────────────────────────────────────── */
 
-    private _createDispatcher(host: string, port: number): InstanceType<UndiciAgentType> {
-        if (!UndiciAgent || !SocksClient) throw new Error('Proxy deps not loaded');
-        const socks = SocksClient;
-        return new UndiciAgent({
-            connect(opts: any, cb: (err: Error | null, socket?: any) => void) {
-                const destPort = Number(opts.port) || (opts.protocol === 'https:' ? 443 : 80);
-
-                socks.createConnection({
-                    proxy: { host, port, type: 5 },
-                    command: 'connect',
-                    destination: { host: opts.hostname, port: destPort },
-                    timeout: 30_000,
-                })
-                    .then(({ socket }) => {
-                        if (opts.protocol === 'https:') {
-                            const tlsSocket = tls.connect({
-                                socket,
-                                servername: opts.servername || opts.hostname,
-                            });
-                            tlsSocket.once('secureConnect', () => cb(null, tlsSocket));
-                            tlsSocket.once('error', (err: Error) => cb(err));
-                        } else {
-                            cb(null, socket);
-                        }
-                    })
-                    .catch((err: Error) => cb(err));
-            },
-        });
+    private _pickTarget(): string {
+        const available = IMPERSONATE_TARGETS.filter((t) => t !== this._currentTarget);
+        return available[Math.floor(Math.random() * available.length)] || IMPERSONATE_TARGETS[0];
     }
 
-    private _rebuildDispatcher(): void {
-        if (!UndiciAgent) return; // deps not loaded yet (pre-install)
-        if (this._dispatcher) void this._dispatcher.close().catch(() => {});
+    private _rebuildClient(): void {
+        if (!createCuimpHttp) return; // deps not loaded yet
+        if (this._client) {
+            try {
+                (this._client as any).destroy?.();
+            } catch {
+                /* ignore */
+            }
+            this._client = null;
+        }
+        this._currentTarget = this._pickTarget();
+        const opts: CuimpOptions = {
+            path: '/usr/bin/curl-impersonate',
+            autoDownload: false,
+            extraCurlArgs: ['--impersonate', this._currentTarget, '--compressed'],
+            logger: SILENT_LOGGER,
+        };
         const p = this.current;
-        if (p) this._dispatcher = this._createDispatcher(p.host, p.port);
+        if (p) {
+            opts.proxy = `socks5://${p.host}:${p.port}`;
+        }
+        this._client = createCuimpHttp(opts);
+        log.verbose(`  cuimp identity: ${this._currentTarget}${p ? ` via ${p.host}:${p.port}` : ''}`);
     }
 
     /**
-     * Shuffle the pool, pick the first proxy, override globalThis.fetch
-     * so all subsequent fetch() calls are routed through the SOCKS5 proxy.
+     * Perform a fetch-like request via the cuimp client.
+     * Returns a CuimpResponse compatible with the fetch API surface we use.
+     */
+    private async _cuimpFetch(url: string | URL, opts: RequestInit & { signal?: AbortSignal } = {}): Promise<CuimpResponse> {
+        const urlStr = typeof url === 'string' ? url : url.toString();
+        const method = (opts.method || 'GET').toUpperCase();
+        const headers: Record<string, string> = {};
+
+        if (opts.headers) {
+            const h = opts.headers as any;
+            if (typeof h.forEach === 'function') {
+                h.forEach((v: string, k: string) => {
+                    headers[k] = v;
+                });
+            } else {
+                Object.assign(headers, h);
+            }
+        }
+
+        const config: CuimpRequestConfig = { url: urlStr, method: method as any, headers };
+        if (opts.body != null) {
+            config.data = typeof opts.body === 'string' ? opts.body : (opts.body as any).toString();
+        }
+        if (opts.signal) {
+            (config as any).signal = opts.signal;
+        }
+
+        const streamRes = await this._client!.requestStream(config, { collectBody: true });
+        return new CuimpResponse(streamRes as any);
+    }
+
+    /**
+     * Initialise cuimp, shuffle proxies (if any), override globalThis.fetch.
      */
     async install(): Promise<void> {
-        if (this._installed || !this.proxies.length) return;
-        await ensureDeps();
+        if (this._installed) return;
+        await ensureCuimp();
 
-        shuffle(this.proxies);
-        this.currentIndex = 0;
-        this._rebuildDispatcher();
+        if (this.proxies.length) {
+            shuffle(this.proxies);
+            this.currentIndex = 0;
+        }
+        this._rebuildClient();
 
         this._originalFetch = globalThis.fetch;
         // eslint-disable-next-line @typescript-eslint/no-this-alias
         const pool = this;
 
-        globalThis.fetch = function proxyFetch(url: any, opts: any = {}): Promise<Response> {
-            if (pool._dispatcher) {
-                return pool._originalFetch!.call(globalThis, url, {
-                    ...opts,
-                    dispatcher: pool._dispatcher,
-                });
-            }
-            return pool._originalFetch!.call(globalThis, url, opts);
+        globalThis.fetch = function cuimpFetch(url: any, opts: any = {}): Promise<Response> {
+            return pool._cuimpFetch(url, opts) as unknown as Promise<Response>;
         } as typeof fetch;
 
         this._installed = true;
-        const p = this.current!;
-        log.info(`SOCKS5 proxy: ${p.host}:${p.port} (pool: ${this.proxies.length})`);
+        const p = this.current;
+        if (p) {
+            log.info(`SOCKS5 proxy: ${p.host}:${p.port} (pool: ${this.proxies.length})`);
+        }
+        log.info(`curl-impersonate: ${this._currentTarget}`);
     }
 }
 

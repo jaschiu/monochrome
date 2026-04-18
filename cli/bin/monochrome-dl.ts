@@ -176,9 +176,9 @@ async function run(ids: string[], opts: CliOpts): Promise<void> {
         const port = parts.length > 1 ? parseInt(parts[parts.length - 1], 10) : NaN;
         proxyPool.add(host, Number.isFinite(port) ? port : 1080);
     }
-    if (proxyPool.size > 0) {
-        await proxyPool.install();
-    }
+    // Always install cuimp (curl-impersonate) for bot detection evasion;
+    // proxies are optional but identity impersonation is always active.
+    await proxyPool.install();
 
     // Resolve output dir
     const outputDir = resolve(opts.outputDir);
@@ -248,6 +248,8 @@ async function run(ids: string[], opts: CliOpts): Promise<void> {
     let downloadFailures = 0;
 
     for (const item of resolved) {
+        // Reset cookies between inputs to avoid cross-contamination
+        proxyPool.clearCookies();
         try {
             log.info(
                 `\nProcessing: ${item.original}${item.original !== item.id ? ` (${item.type || 'auto'}:${item.id})` : ''}`
