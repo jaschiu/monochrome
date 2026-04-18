@@ -69,6 +69,7 @@ export async function addMetadata(
             } else if (extension === 'flac') {
                 args.push(
                     '-map', '1:v', '-c:v', 'copy',
+                    '-disposition:v:0', 'attached_pic',
                     '-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)'
                 );
             } else if (extension === 'm4a') {

@@ -300,7 +300,15 @@ export async function downloadTrack(
     );
 
     let coverBuffer: Buffer | null = null;
-    const coverId = track.album?.cover;
+    let coverId: string | undefined = track.album?.cover;
+    if (!coverId && track.album?.id) {
+        try {
+            const { album: albumData } = await apiClient.getAlbum(track.album.id);
+            if (albumData?.cover) coverId = albumData.cover;
+        } catch {
+            log.verbose('  Could not fetch album for cover art');
+        }
+    }
     if (coverId) {
         try {
             const coverUrl = apiClient.getCoverUrl(coverId, coverSize);
