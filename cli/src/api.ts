@@ -68,8 +68,8 @@ export async function fetchWithRetry(
             if (response.status === 429) {
                 const retryAfter = parseInt(response.headers.get('Retry-After') || '3', 10);
                 if (proxyPool.size > 1) {
-                    proxyPool.markRateLimited(retryAfter);
-                    const waitMs = proxyPool.rotate();
+                    proxyPool.markRateLimited(retryAfter, 'tidal');
+                    const waitMs = proxyPool.rotate('tidal');
                     if (waitMs > 0) {
                         log.verbose(`  All proxies rate-limited, waiting ${Math.ceil(waitMs / 1000)}s...`);
                         await new Promise((r) => setTimeout(r, waitMs));

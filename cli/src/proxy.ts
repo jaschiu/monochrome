@@ -39,7 +39,7 @@ function shuffle<T>(arr: T[]): T[] {
 interface ProxyEntry {
     host: string;
     port: number;
-    rateLimitedUntil: number;
+    rateLimitedUntil: Map<string, number>;
 }
 
 class ProxyPool {
@@ -51,7 +51,7 @@ class ProxyPool {
 
     /** Add a SOCKS5 endpoint to the pool. */
     add(host: string, port: number = 1080): void {
-        this.proxies.push({ host, port: Number(port), rateLimitedUntil: 0 });
+        this.proxies.push({ host, port: Number(port), rateLimitedUntil: new Map() });
     }
 
     get size(): number {
@@ -63,25 +63,25 @@ class ProxyPool {
         return this.proxies[this.currentIndex % this.proxies.length];
     }
 
-    /** Mark the current proxy as rate-limited for `seconds`. */
-    markRateLimited(seconds: number = 10): void {
+    /** Mark the current proxy as rate-limited for `seconds` on the given service. */
+    markRateLimited(seconds: number = 10, service: string = 'default'): void {
         const p = this.current;
         if (!p) return;
-        p.rateLimitedUntil = Date.now() + seconds * 1000;
-        log.verbose(`  Proxy ${p.host}:${p.port} rate-limited for ${seconds}s`);
+        p.rateLimitedUntil.set(service, Date.now() + seconds * 1000);
+        log.verbose(`  Proxy ${p.host}:${p.port} rate-limited for ${seconds}s [${service}]`);
     }
 
     /**
-     * Rotate to the next non-rate-limited proxy.
+     * Rotate to the next non-rate-limited proxy for the given service.
      * @returns ms to wait if ALL proxies are rate-limited, or 0 on success.
      */
-    rotate(): number {
+    rotate(service: string = 'default'): number {
         if (this.proxies.length <= 1) return 0;
         const now = Date.now();
 
         for (let i = 1; i <= this.proxies.length; i++) {
             const idx = (this.currentIndex + i) % this.proxies.length;
-            if (this.proxies[idx].rateLimitedUntil <= now) {
+            if ((this.proxies[idx].rateLimitedUntil.get(service) || 0) <= now) {
                 this.currentIndex = idx;
                 this._rebuildDispatcher();
                 log.info(`  Rotated → ${this.proxies[idx].host}`);
@@ -93,7 +93,7 @@ class ProxyPool {
         let minWait = Infinity;
         let minIdx = 0;
         for (let i = 0; i < this.proxies.length; i++) {
-            const wait = this.proxies[i].rateLimitedUntil - now;
+            const wait = (this.proxies[i].rateLimitedUntil.get(service) || 0) - now;
             if (wait < minWait) {
                 minWait = wait;
                 minIdx = i;

@@ -16,6 +16,7 @@ import { checkFfmpeg, isCustomFormat } from '../src/transcode.js';
 import { cacheClear, cacheStats } from '../src/cache.js';
 import { downloadTrack, downloadAlbum, detectIdType } from '../src/downloader.js';
 import { proxyPool, fetchMullvadRelays } from '../src/proxy.js';
+import { resolveAllInputs } from '../src/resolve-input.js';
 import type { DownloadOpts } from '../src/downloader.js';
 
 const program = new Command();
@@ -35,7 +36,7 @@ program
     .name('monochrome-dl')
     .description('Download Tidal tracks and albums via Monochrome')
     .version('1.0.0')
-    .argument('[ids...]', 'Tidal track or album IDs (auto-detected)')
+    .argument('[ids...]', 'Tidal IDs or URLs (or other music URLs via song.link)')
 
     // Output
     .option('-o, --output-dir <path>', 'Output directory', '.')
@@ -129,7 +130,7 @@ async function run(ids: string[], opts: CliOpts): Promise<void> {
     }
 
     if (!ids || ids.length === 0) {
-        throw new Error('At least one track or album ID is required. Use --help for usage.');
+        throw new Error('At least one track/album ID or URL is required. Use --help for usage.');
     }
 
     // Validate quality
@@ -233,30 +234,42 @@ async function run(ids: string[], opts: CliOpts): Promise<void> {
         concurrency: opts.concurrency,
     };
 
-    // Process each ID
+    // Resolve all inputs (Tidal IDs, Tidal URLs, other-service URLs via song.link)
+    log.info('Resolving inputs...');
+    const { resolved, errors: resolveErrors } = await resolveAllInputs(ids);
+
+    if (resolved.length === 0) {
+        throw new Error('No valid inputs to process. All inputs failed to resolve.');
+    }
+
+    // Process each resolved input
     let totalTracks = 0;
     let totalAlbums = 0;
-    let failures = 0;
+    let downloadFailures = 0;
 
-    for (const id of ids) {
+    for (const item of resolved) {
         try {
-            log.info(`\nProcessing ID: ${id}`);
-            const type = await detectIdType(apiClient, id);
+            log.info(
+                `\nProcessing: ${item.original}${item.original !== item.id ? ` (${item.type || 'auto'}:${item.id})` : ''}`
+            );
+
+            // Use pre-resolved type if available, otherwise auto-detect
+            const type = item.type || (await detectIdType(apiClient, item.id));
             log.verbose(`  Detected type: ${type}`);
 
             if (type === 'album') {
-                const result = await downloadAlbum(apiClient, instances, id, outputDir, downloadOpts);
+                const result = await downloadAlbum(apiClient, instances, item.id, outputDir, downloadOpts);
                 totalAlbums++;
                 totalTracks += result.trackCount;
             } else {
-                const { track } = await apiClient.getTrack(id, quality);
+                const { track } = await apiClient.getTrack(item.id, quality);
                 await downloadTrack(apiClient, instances, track, outputDir, downloadOpts);
                 totalTracks++;
             }
         } catch (err) {
-            log.error(`Failed to process ${id}: ${(err as Error).message}`);
+            log.error(`Failed to process ${item.original}: ${(err as Error).message}`);
             if (opts.verbose) console.error((err as Error).stack);
-            failures++;
+            downloadFailures++;
         }
     }
 
@@ -264,7 +277,16 @@ async function run(ids: string[], opts: CliOpts): Promise<void> {
     log.info('\n' + '─'.repeat(40));
     if (totalAlbums > 0) log.success(`Albums: ${totalAlbums}`);
     log.success(`Tracks: ${totalTracks}`);
-    if (failures > 0) log.warn(`Failures: ${failures}`);
+    const conversions = resolved.filter((r) => r.tidalUrl);
+    if (conversions.length > 0) {
+        log.info(`Converted URLs (${conversions.length}):`);
+        for (const c of conversions) log.info(`  ${c.original} → ${c.tidalUrl}`);
+    }
+    if (resolveErrors.length > 0) {
+        log.warn(`Failed to resolve (${resolveErrors.length}):`);
+        for (const e of resolveErrors) log.warn(`  ${e.input}: ${e.error}`);
+    }
+    if (downloadFailures > 0) log.warn(`Download failures: ${downloadFailures}`);
     log.info(`Output: ${outputDir}`);
 }
 
