@@ -3,6 +3,12 @@
     "type": "module",
     "version": "2.5.1",
     "description": "[<img src=\"https://github.com/monochrome-music/monochrome/blob/main/assets/512.png?raw=true\" alt=\"Monochrome Logo\">](https://monochrome.tf)",
+    "imports": {
+        "#js/*": "./js/*"
+    },
+    "bin": {
+        "monochrome-dl": "./cli/bin/monochrome-dl.ts"
+    },
     "scripts": {
         "dev": "vite",
         "test": "vitest run --config=vite.config.ts",
@@ -19,7 +25,10 @@
         "lint": "bun run lint:js && bun run lint:css && bun run lint:html",
         "format": "prettier --write .",
         "lhci": "lhci",
-        "lhci:autorun": "npm run build && lhci autorun"
+        "lhci:autorun": "npm run build && lhci autorun",
+        "cli": "vite-node --config vite.cli.config.ts cli/bin/monochrome-dl.ts",
+        "cli:build": "vite build --config vite.cli.config.ts",
+        "cli:test": "vite-node --config vite.cli.config.ts cli/test/e2e.ts"
     },
     "repository": {
         "type": "git",
@@ -56,11 +65,12 @@
         "typescript": "^5.9.3",
         "vite": "^7.3.1",
         "vite-bundle-visualizer": "^1.2.1",
+        "vite-node": "^3.2.4",
         "vite-plugin-purgecss": "^0.2.13",
         "vite-plugin-pwa": "^1.2.0"
     },
     "overrides": {
-        "sourcemap-codec": "^1.4.14",
+        "@jridgewell/sourcemap-codec": "^1.4.14",
         "source-map": "^0.7.4",
         "serialize-javascript": "^7.0.3"
     },
@@ -85,6 +95,7 @@
         "butterchurn": "^2.6.7",
         "butterchurn-presets": "^2.4.7",
         "client-zip": "^2.5.0",
+        "commander": "^12.1.0",
         "cookie-session": "^2.1.1",
         "eventemitter3": "^5.0.4",
         "events": "^3.3.0",

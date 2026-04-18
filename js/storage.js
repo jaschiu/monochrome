@@ -1,6 +1,7 @@
 //storage.js
 
 import { SVG_RIGHT_ARROW } from './icons';
+import { DEFAULT_INSTANCES } from './default-instances.ts';
 
 export const apiSettings = {
     STORAGE_KEY: 'monochrome-api-instances-v9',
@@ -75,28 +76,10 @@ export const apiSettings = {
 
             if (!data) {
                 console.error('Failed to load instances from all uptime APIs:', fetchError);
+                // Use the shared hardcoded fallback list (also consumed by the CLI).
                 this.defaultInstances = {
-                    api: [
-                        { url: 'https://hifi.geeked.wtf', version: '2.7' },
-                        { url: 'https://eu-central.monochrome.tf', version: '2.7' },
-                        { url: 'https://us-west.monochrome.tf', version: '2.7' },
-                        { url: 'https://api.monochrome.tf', version: '2.5' },
-                        { url: 'https://monochrome-api.samidy.com', version: '2.3' },
-                        { url: 'https://maus.qqdl.site', version: '2.6' },
-                        { url: 'https://vogel.qqdl.site', version: '2.6' },
-                        { url: 'https://katze.qqdl.site', version: '2.6' },
-                        { url: 'https://hund.qqdl.site', version: '2.6' },
-                        { url: 'https://tidal.kinoplus.online', version: '2.2' },
-                        { url: 'https://wolf.qqdl.site', version: '2.2' },
-                    ],
-                    streaming: [
-                        { url: 'https://hifi.geeked.wtf', version: '2.7' },
-                        { url: 'https://maus.qqdl.site', version: '2.6' },
-                        { url: 'https://vogel.qqdl.site', version: '2.6' },
-                        { url: 'https://katze.qqdl.site', version: '2.6' },
-                        { url: 'https://hund.qqdl.site', version: '2.6' },
-                        { url: 'https://wolf.qqdl.site', version: '2.6' },
-                    ],
+                    api: [...DEFAULT_INSTANCES.api],
+                    streaming: [...DEFAULT_INSTANCES.streaming],
                 };
                 this.instancesLoaded = true;
                 this._loadPromise = null;

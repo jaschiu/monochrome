@@ -15,6 +15,7 @@ import { getProxyUrl } from './proxy-utils.js';
 import { loadFfmpeg, FfmpegError, ffmpeg } from './ffmpeg.js';
 import { triggerDownload, applyAudioPostProcessing } from './download-utils.ts';
 import { isCustomFormat } from './ffmpegFormats.ts';
+import { buildTidalCoverUrl } from './tidal-urls.ts';
 import { DownloadProgress } from './progressEvents.js';
 import { resolveDownloadTotalBytes } from './downloadProgressUtils.js';
 import { readableStreamIterator } from './readableStreamIterator.js';
@@ -1911,16 +1912,10 @@ export class LosslessAPI {
     }
 
     getCoverUrl(id, size = '320') {
-        if (!id) {
-            return `https://picsum.photos/seed/${Math.random()}/${size}`;
-        }
-
-        if (typeof id === 'string' && (id.startsWith('http') || id.startsWith('blob:') || id.startsWith('assets/'))) {
-            return id;
-        }
-
-        const formattedId = String(id).replace(/-/g, '/');
-        return `https://resources.tidal.com/images/${formattedId}/${size}x${size}.jpg`;
+        // Web uses a random picsum placeholder when no cover is available
+        // (keeps UI tiles non-empty). `buildTidalCoverUrl` returns null for
+        // empty ids, so we layer the fallback here.
+        return buildTidalCoverUrl(id, size) ?? `https://picsum.photos/seed/${Math.random()}/${size}`;
     }
 
     getCoverSrcset(id) {
