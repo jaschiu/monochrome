@@ -1,5 +1,6 @@
 import { cacheGet, cacheSet } from './cache.js';
 import { log } from './log.js';
+import { proxyPool } from './proxy.js';
 import type { Instances } from './instances.js';
 import { TIDAL_CLIENT_ID as CLIENT_ID, TIDAL_CLIENT_SECRET as CLIENT_SECRET } from '#js/tidal-client-ids.ts';
 import { buildTidalCoverUrl } from '#js/tidal-urls.ts';
@@ -66,8 +67,17 @@ export async function fetchWithRetry(
 
             if (response.status === 429) {
                 const retryAfter = parseInt(response.headers.get('Retry-After') || '3', 10);
-                log.verbose(`  Rate limited, waiting ${retryAfter}s...`);
-                await new Promise((r) => setTimeout(r, retryAfter * 1000));
+                if (proxyPool.size > 1) {
+                    proxyPool.markRateLimited(retryAfter);
+                    const waitMs = proxyPool.rotate();
+                    if (waitMs > 0) {
+                        log.verbose(`  All proxies rate-limited, waiting ${Math.ceil(waitMs / 1000)}s...`);
+                        await new Promise((r) => setTimeout(r, waitMs));
+                    }
+                } else {
+                    log.verbose(`  Rate limited, waiting ${retryAfter}s...`);
+                    await new Promise((r) => setTimeout(r, retryAfter * 1000));
+                }
                 continue;
             }
 

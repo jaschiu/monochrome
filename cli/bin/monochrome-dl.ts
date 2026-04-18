@@ -15,6 +15,7 @@ import { createApiClient, getToken } from '../src/api.js';
 import { checkFfmpeg, isCustomFormat } from '../src/transcode.js';
 import { cacheClear, cacheStats } from '../src/cache.js';
 import { downloadTrack, downloadAlbum, detectIdType } from '../src/downloader.js';
+import { proxyPool, fetchMullvadRelays } from '../src/proxy.js';
 import type { DownloadOpts } from '../src/downloader.js';
 
 const program = new Command();
@@ -69,6 +70,10 @@ program
     .option('--instance <url>', 'Custom API instance URL (repeatable)', collect, [] as string[])
     .option('--no-default-instances', 'Only use custom --instance URLs')
 
+    // Proxy
+    .option('--socks5-proxy <host>', 'SOCKS5 proxy host[:port] (default port 1080)')
+    .option('--mullvad-relays', 'Auto-fetch Mullvad SOCKS5 relays and rotate on rate-limit', false)
+
     // System
     .option('--no-cache', 'Disable API response caching')
     .option('--clear-cache', 'Clear cache and exit')
@@ -96,6 +101,8 @@ interface CliOpts {
     separateDiscs: boolean;
     instance: string[];
     defaultInstances: boolean;
+    socks5Proxy?: string;
+    mullvadRelays: boolean;
     cache: boolean;
     clearCache?: boolean;
     concurrency: number;
@@ -156,6 +163,20 @@ async function run(ids: string[], opts: CliOpts): Promise<void> {
         if (!hasFfmpeg) {
             throw new Error('ffmpeg is required for transcoding/container conversion but was not found on PATH');
         }
+    }
+
+    // Initialize SOCKS5 proxy pool (before any proxied requests)
+    if (opts.mullvadRelays) {
+        await fetchMullvadRelays();
+    }
+    if (opts.socks5Proxy) {
+        const parts = opts.socks5Proxy.split(':');
+        const host = parts.slice(0, -1).join(':') || parts[0];
+        const port = parts.length > 1 ? parseInt(parts[parts.length - 1], 10) : NaN;
+        proxyPool.add(host, Number.isFinite(port) ? port : 1080);
+    }
+    if (proxyPool.size > 0) {
+        await proxyPool.install();
     }
 
     // Resolve output dir
