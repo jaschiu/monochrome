@@ -281,10 +281,10 @@ export const proxyPool = new ProxyPool();
 
 /**
  * Fetch the Mullvad WireGuard relay list and populate `proxyPool` with
- * SOCKS5 endpoints derived from each active relay's hostname.
+ * US-only SOCKS5 endpoints derived from each active relay's hostname.
  *
- * Relay hostname format:  `se-mma-wg-001`
- * SOCKS5 hostname format: `se-mma-wg-socks5-001.relays.mullvad.net:1080`
+ * Relay hostname format:  `us-nyc-wg-001`
+ * SOCKS5 hostname format: `us-nyc-wg-socks5-001.relays.mullvad.net:1080`
  */
 export async function fetchMullvadRelays(): Promise<void> {
     log.info('Fetching Mullvad relay list...');
@@ -298,6 +298,7 @@ export async function fetchMullvadRelays(): Promise<void> {
     let count = 0;
     for (const relay of relays) {
         if (!relay.active || !relay.hostname) continue;
+        if (!(relay.hostname as string).startsWith('us-')) continue;
 
         const m = (relay.hostname as string).match(/^(.+)-wg-(\d+)$/);
         if (!m) continue;
@@ -307,6 +308,6 @@ export async function fetchMullvadRelays(): Promise<void> {
         count++;
     }
 
-    log.success(`${count} Mullvad SOCKS5 relays loaded`);
+    log.success(`${count} Mullvad US SOCKS5 relays loaded`);
     if (count === 0) throw new Error('No active Mullvad WireGuard relays found');
 }
