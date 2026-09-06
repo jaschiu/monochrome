@@ -30,7 +30,8 @@
         "lhci:autorun": "npm run build && lhci autorun",
         "cli": "vite-node --config vite.cli.config.ts cli/bin/monochrome-dl.ts",
         "cli:build": "vite build --config vite.cli.config.ts",
-        "cli:test": "vite-node --config vite.cli.config.ts cli/test/e2e.ts"
+        "cli:test": "bash cli/test/e2e.sh",
+        "cli:test:proxy": "vite-node --config vite.cli.config.ts cli/test/proxy-check.ts"
     },
     "repository": {
         "type": "git",

@@ -152,6 +152,10 @@ bun run cli -- 491206011 --no-cache
 ## Tests
 
 ```bash
-bun run cli:test        # requires ffmpeg + ffprobe on PATH
-./cli/test/e2e.sh       # equivalent bash harness
+bun run cli:test         # download E2E harness; requires ffmpeg + ffprobe on PATH
+./cli/test/e2e.sh        # same harness, invoked directly
+bun run cli:test:proxy   # cuimp + Mullvad SOCKS5 checks (network-dependent)
 ```
+
+Both are standalone scripts rather than vitest specs; `npm test` runs the web
+suite in a browser, where these Node-only checks can't execute.
