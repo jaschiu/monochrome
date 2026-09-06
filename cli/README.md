@@ -1,11 +1,11 @@
 # monochrome-dl
 
-CLI tool for downloading Tidal tracks and albums via [Monochrome](https://github.com/monochrome-music/monochrome) proxy instances.
+CLI tool for downloading Tidal tracks and albums via [Monochrome](https://github.com/monochrome-music/monochrome) sources.
 
 ## Requirements
 
-- **Node.js** ≥ 18
-- **ffmpeg** and **ffprobe** on PATH (required for DASH streams and transcoding)
+- **Node.js** ≥ 20 (≥ 18.17 should work, but Node ≥ 20 provides `globalThis.navigator`)
+- **ffmpeg** and **ffprobe** on PATH (required for DASH streams, CENC decryption, and transcoding)
 
 ## Install
 
@@ -14,7 +14,7 @@ The CLI ships with the main Monochrome repository and is run through Vite
 distribution). From the repo root:
 
 ```bash
-bun install
+npm install   # or bun install
 ```
 
 ## Usage
@@ -22,13 +22,10 @@ bun install
 ```bash
 # Dev (TypeScript source via vite-node)
 bun run cli -- 491206012            # single track
-bun run cli -- 491206011            # album
-bun run cli -- 491206011 491206012  # multiple IDs
-bun run cli -- 491206011 -o ~/Music # custom output directory
-bun run cli -- 491206011 -v         # verbose logging
+npm run -s cli -- 491206011         # album (use -s/--silent to suppress npm banner)
 
 # Distribution build
-bun run cli:build                   # produces cli/dist/monochrome-dl.js
+npm run cli:build                   # produces cli/dist/monochrome-dl.js
 node cli/dist/monochrome-dl.js 491206012
 ```
 
@@ -99,15 +96,16 @@ bun run cli -- 491206011 --instance https://my-instance.example.com --no-default
 
 ## Streaming sources
 
-Tidal `/trackManifests/` is tried first, then the web app's remaining
-headless-capable fallbacks by ISRC: Qobuz, then Deezer. (Amazon Music, which
-upstream prefers in the browser, needs Cloudflare Turnstile and CENC
-decryption, so it is not usable from the CLI.)
+The CLI mirrors upstream's source resolution order:
 
-Tidal audio URLs go through the same audio proxy as the web app. The browser
-needs it for CORS; the CLI does not, so if the proxy is unreachable the
-download retries directly instead of failing. Pass `--no-audio-proxy` to skip
-it entirely, e.g. when using `--socks5-proxy`.
+1. **Unified Playback API** (`--unified-token`) — Amazon, Tidal, and Mono/Monochrome.
+   - Amazon CENC-encrypted MP4 streams are decrypted with ffmpeg using the key returned by the API.
+   - The website's built-in default token requires a browser Cloudflare Turnstile challenge, so **you must provide your own token** via `--unified-token` or `MONOCHROME_UNIFIED_TOKEN`. Pass `--no-unified` to skip.
+2. **Deezer fallback** by ISRC.
+3. **Deezer LOSSLESS retry** if the requested format wasn't lossless.
+4. **Legacy HiFi instance `/trackManifests/`** as a last resort.
+
+Use `--instance <url> --no-default-instances` to target a specific backend.
 
 ## Info subcommand
 
@@ -152,10 +150,11 @@ bun run cli -- 491206011 --no-cache
 ## Tests
 
 ```bash
-bun run cli:test         # download E2E harness; requires ffmpeg + ffprobe on PATH
-./cli/test/e2e.sh        # same harness, invoked directly
-bun run cli:test:proxy   # cuimp + Mullvad SOCKS5 checks (network-dependent)
+npm run cli:test:unit    # vitest unit tests for Unified Playback / CENC (no network)
+npm run cli:test         # live download E2E harness; requires ffmpeg + ffprobe on PATH
+./cli/test/e2e.sh        # same harness, invoked directly (npm fallback if bun is missing)
+npm run cli:test:proxy   # cuimp + Mullvad SOCKS5 checks (network-dependent)
 ```
 
-Both are standalone scripts rather than vitest specs; `npm test` runs the web
-suite in a browser, where these Node-only checks can't execute.
+The E2E and proxy scripts are standalone bash/Node checks. `npm test` runs the
+web suite in a browser, where these Node-only checks can't execute.

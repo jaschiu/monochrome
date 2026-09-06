@@ -80,6 +80,45 @@ export async function runFfmpeg(
 }
 
 /**
+ * Decrypt an AES-CTR CENC MP4 using ffmpeg's mov demuxer decryption-key support.
+ */
+export async function decryptCencMp4(
+    encryptedBuffer: Buffer,
+    keyHex: string,
+    opts: { keyId?: string; outputFormat?: 'm4a' | 'flac' } = {}
+): Promise<Buffer> {
+    if (!keyHex) throw new Error('Missing CENC decryption key');
+
+    const inputExt = 'mp4';
+    const outputExt = opts.outputFormat || 'm4a';
+    const inPath = tmpFile(inputExt);
+    const outPath = tmpFile(outputExt);
+
+    try {
+        await writeFile(inPath, encryptedBuffer);
+
+        const args = ['-y', '-decryption_key', keyHex, '-i', inPath, '-c', 'copy', '-map_metadata', '-1', outPath];
+
+        log.verbose(`  ffmpeg ${args.join(' ')}`);
+        await new Promise<void>((resolve, reject) => {
+            execFile('ffmpeg', args, { maxBuffer: 100 * 1024 * 1024, timeout: 300000 }, (err, _stdout, stderr) => {
+                if (err) {
+                    log.verbose(`  ffmpeg CENC stderr: ${stderr}`);
+                    reject(new Error(`ffmpeg CENC decryption failed: ${err.message}`));
+                } else {
+                    resolve();
+                }
+            });
+        });
+
+        return await readFile(outPath);
+    } finally {
+        await unlink(inPath).catch(() => {});
+        await unlink(outPath).catch(() => {});
+    }
+}
+
+/**
  * Detect audio format from file header bytes.
  * Wraps `detectAudioFormat` (which takes a DataView) for CLI Buffer input.
  */

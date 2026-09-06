@@ -93,6 +93,11 @@ program
     .option('--socks5-proxy <host>', 'SOCKS5 proxy host[:port] (default port 1080)')
     .option('--mullvad-relays', 'Auto-fetch Mullvad SOCKS5 relays and rotate on rate-limit', false)
 
+    // Unified Playback
+    .option('--unified-token <token>', 'Unified Playback API bearer token (env: MONOCHROME_UNIFIED_TOKEN)')
+    .option('--unified-url <url>', 'Unified Playback API base URL (env: MONOCHROME_UNIFIED_URL)')
+    .option('--no-unified', 'Disable Unified Playback API lookups')
+
     // System
     .option('--no-cache', 'Disable API response caching')
     .option('--clear-cache', 'Clear cache and exit')
@@ -122,6 +127,9 @@ interface CliOpts {
     defaultInstances: boolean;
     socks5Proxy?: string;
     mullvadRelays: boolean;
+    unified: boolean;
+    unifiedToken?: string;
+    unifiedUrl?: string;
     cache: boolean;
     clearCache?: boolean;
     concurrency: number;
@@ -214,7 +222,14 @@ async function run(ids: string[], opts: CliOpts): Promise<void> {
     await authenticate();
 
     // Create API client
-    const apiClient = createApiClient(instances, { useCache: opts.cache !== false });
+    const apiClient = createApiClient(instances, {
+        useCache: opts.cache !== false,
+        unified: {
+            enabled: opts.unified !== false,
+            token: opts.unifiedToken || process.env.MONOCHROME_UNIFIED_TOKEN,
+            baseUrl: opts.unifiedUrl || process.env.MONOCHROME_UNIFIED_URL,
+        },
+    });
 
     // Cache stats
     if (opts.verbose) {

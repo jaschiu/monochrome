@@ -37,6 +37,10 @@ function chmodBinPlugin(entryFileName: string): Plugin {
 export default defineConfig({
     // Suppress the "index.html not found" warning; this config is Node-only.
     appType: 'custom',
+    test: {
+        environment: 'node',
+        setupFiles: [path.resolve(__dirname, 'cli/test/setup.ts')],
+    },
     resolve: {
         alias: [
             // Same virtual-module aliases as the web config so `js/icons.ts`

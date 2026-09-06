@@ -31,7 +31,8 @@
         "cli": "vite-node --config vite.cli.config.ts cli/bin/monochrome-dl.ts",
         "cli:build": "vite build --config vite.cli.config.ts",
         "cli:test": "bash cli/test/e2e.sh",
-        "cli:test:proxy": "vite-node --config vite.cli.config.ts cli/test/proxy-check.ts"
+        "cli:test:proxy": "vite-node --config vite.cli.config.ts cli/test/proxy-check.ts",
+        "cli:test:unit": "vitest run --config vite.cli.config.ts cli/test"
     },
     "repository": {
         "type": "git",

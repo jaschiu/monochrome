@@ -8,6 +8,7 @@ import { deezerFallbackSettings } from '#js/storage.js';
 // @ts-expect-error - JS module without full types
 import { normalizeQualityToken } from '#js/utils.js';
 import { HiFiClient } from '#js/HiFi.ts';
+import { createUnifiedClient, type UnifiedClientOptions } from './unified.js';
 
 export interface FetchOpts {
     signal?: AbortSignal;
@@ -230,6 +231,20 @@ export interface RgInfo {
 export interface StreamResult {
     url: string;
     rgInfo: RgInfo | null;
+    /** Source/provider when known (unified/deezer/etc.). */
+    provider?: string;
+    /** Stream packaging type. */
+    playbackType?: 'direct' | 'dash' | 'hls' | 'dash-cenc';
+    /** Audio MIME type when known. */
+    mimeType?: string;
+    /** Detected codec when known. */
+    codec?: string | null;
+    /** Original container when known. */
+    container?: string | null;
+    /** Amazon CENC decryption key (hex). */
+    decryptionKey?: string;
+    /** Amazon CENC key ID (hex). */
+    keyId?: string;
 }
 
 const DEEZER_FORMAT_MAP: Record<string, string> = {
@@ -270,7 +285,96 @@ export async function getDeezerStreamUrl(isrc: string, quality = 'LOSSLESS'): Pr
         return null;
     }
 
-    return { url, rgInfo: null };
+    return { url, rgInfo: null, provider: 'deezer', playbackType: 'direct' };
+}
+
+/**
+ * Legacy fallback: query a HiFi instance's /trackManifests endpoint and, if
+ * that fails, try the /info endpoint's originalTrackUrl or embedded manifest.
+ */
+async function getTrackManifestsStream(
+    instances: Instances,
+    id: string | number,
+    quality: string,
+    download: boolean,
+    lookup: { track: Track; info: unknown; originalTrackUrl: string | null }
+): Promise<StreamResult | null> {
+    const buildParams = (): URLSearchParams => {
+        const paramsArray: [string, string][] = [];
+        if (quality === 'LOW') {
+            paramsArray.push(['formats', 'HEAACV1']);
+        } else if (quality === 'HIGH') {
+            paramsArray.push(['formats', 'HEAACV1']);
+            paramsArray.push(['formats', 'AACLC']);
+        } else if (quality === 'LOSSLESS') {
+            paramsArray.push(['formats', 'HEAACV1']);
+            paramsArray.push(['formats', 'AACLC']);
+            paramsArray.push(['formats', 'FLAC']);
+        } else if (quality === 'HI_RES_LOSSLESS') {
+            paramsArray.push(['formats', 'HEAACV1']);
+            paramsArray.push(['formats', 'AACLC']);
+            paramsArray.push(['formats', 'FLAC_HIRES']);
+            paramsArray.push(['formats', 'FLAC']);
+        } else if (quality === 'DOLBY_ATMOS') {
+            paramsArray.push(['formats', 'EAC3_JOC']);
+        } else {
+            paramsArray.push(['formats', 'HEAACV1']);
+            paramsArray.push(['formats', 'AACLC']);
+            paramsArray.push(['formats', 'FLAC']);
+            paramsArray.push(['formats', 'FLAC_HIRES']);
+            if (download) paramsArray.push(['formats', 'EAC3_JOC']);
+        }
+        paramsArray.push(['adaptive', 'true'], ['manifestType', 'MPEG_DASH'], ['uriScheme', 'HTTPS'], ['usage', 'PLAYBACK']);
+        return new URLSearchParams(paramsArray);
+    };
+
+    try {
+        const response = await fetchWithRetry(
+            instances,
+            `/trackManifests/?id=${id}&${buildParams().toString()}`,
+            { type: 'streaming' }
+        );
+        const jsonResponse = (await response.json()) as any;
+        const url = jsonResponse?.data?.data?.attributes?.uri;
+        if (url) {
+            const attrs = jsonResponse?.data?.data?.attributes;
+            return {
+                url,
+                rgInfo: {
+                    trackReplayGain: attrs?.trackAudioNormalizationData?.replayGain,
+                    trackPeakAmplitude: attrs?.trackAudioNormalizationData?.peakAmplitude,
+                    albumReplayGain: attrs?.albumAudioNormalizationData?.replayGain,
+                    albumPeakAmplitude: attrs?.albumAudioNormalizationData?.peakAmplitude,
+                },
+                provider: 'hifi',
+                playbackType: 'dash',
+            };
+        }
+    } catch {
+        /* fall through to /info fallback */
+    }
+
+    if (lookup.originalTrackUrl) {
+        return { url: lookup.originalTrackUrl, rgInfo: null, provider: 'tidal', playbackType: 'direct' };
+    }
+
+    const extracted = extractStreamUrlFromManifest((lookup.info as any)?.manifest);
+    if (extracted) {
+        const info = lookup.info as any;
+        return {
+            url: extracted,
+            rgInfo: {
+                trackReplayGain: info.trackReplayGain || info.replayGain,
+                trackPeakAmplitude: info.trackPeakAmplitude || info.peakAmplitude,
+                albumReplayGain: info.albumReplayGain,
+                albumPeakAmplitude: info.albumPeakAmplitude,
+            },
+            provider: 'tidal',
+            playbackType: extracted.includes('.mpd') ? 'dash' : 'direct',
+        };
+    }
+
+    return null;
 }
 
 export interface ApiClient {
@@ -285,8 +389,12 @@ export interface ApiClient {
 /**
  * Create a TidalAPI client bound to specific instances with optional caching.
  */
-export function createApiClient(instances: Instances, { useCache = true }: { useCache?: boolean } = {}): ApiClient {
+export function createApiClient(
+    instances: Instances,
+    { useCache = true, unified }: { useCache?: boolean; unified?: UnifiedClientOptions } = {}
+): ApiClient {
     const streamCache = new Map<string, StreamResult>();
+    const unifiedClient = createUnifiedClient(unified);
 
     async function apiGet<T = any>(path: string, opts: FetchOpts = {}): Promise<T> {
         const response = await fetchWithRetry(instances, path, opts);
@@ -471,99 +579,51 @@ export function createApiClient(instances: Instances, { useCache = true }: { use
             const cached = streamCache.get(cacheKey);
             if (cached) return cached;
 
-            let streamUrl: string | undefined;
-            let rgInfo: RgInfo | null = null;
-            let isUsingManifestEndpoint = false;
+            const lookup = await this.getTrack(id, quality);
+            const isrc = lookup.track?.isrc;
+            const intent = download ? 'download' : 'stream';
+            let result: StreamResult | null = null;
 
-            try {
-                const paramsArray: [string, string][] = [];
-                if (quality === 'LOW') {
-                    paramsArray.push(['formats', 'HEAACV1']);
-                } else if (quality === 'HIGH') {
-                    paramsArray.push(['formats', 'HEAACV1']);
-                    paramsArray.push(['formats', 'AACLC']);
-                } else if (quality === 'LOSSLESS') {
-                    paramsArray.push(['formats', 'HEAACV1']);
-                    paramsArray.push(['formats', 'AACLC']);
-                    paramsArray.push(['formats', 'FLAC']);
-                } else if (quality === 'HI_RES_LOSSLESS') {
-                    paramsArray.push(['formats', 'HEAACV1']);
-                    paramsArray.push(['formats', 'AACLC']);
-                    paramsArray.push(['formats', 'FLAC_HIRES']);
-                    paramsArray.push(['formats', 'FLAC']);
-                } else if (quality === 'DOLBY_ATMOS') {
-                    paramsArray.push(['formats', 'EAC3_JOC']);
-                } else {
-                    paramsArray.push(['formats', 'HEAACV1']);
-                    paramsArray.push(['formats', 'AACLC']);
-                    paramsArray.push(['formats', 'FLAC']);
-                    paramsArray.push(['formats', 'FLAC_HIRES']);
-                    if (download) paramsArray.push(['formats', 'EAC3_JOC']);
-                }
-
-                paramsArray.push(
-                    ['adaptive', 'true'],
-                    ['manifestType', 'MPEG_DASH'],
-                    ['uriScheme', 'HTTPS'],
-                    ['usage', 'PLAYBACK']
-                );
-
-                const params = new URLSearchParams(paramsArray);
-                const response = await fetchWithRetry(
-                    instances,
-                    `/trackManifests/?id=${id}&${params.toString()}`,
-                    { type: 'streaming' }
-                );
-                const jsonResponse = (await response.json()) as any;
-                const url = jsonResponse?.data?.data?.attributes?.uri;
-                if (url) {
-                    streamUrl = url;
-                    const attrs = jsonResponse?.data?.data?.attributes;
-                    rgInfo = {
-                        trackReplayGain: attrs?.trackAudioNormalizationData?.replayGain,
-                        trackPeakAmplitude: attrs?.trackAudioNormalizationData?.peakAmplitude,
-                        albumReplayGain: attrs?.albumAudioNormalizationData?.replayGain,
-                        albumPeakAmplitude: attrs?.albumAudioNormalizationData?.peakAmplitude,
-                    };
-                    isUsingManifestEndpoint = true;
-                } else {
-                    throw new Error('No URI in trackManifests response');
-                }
-            } catch {
-                // Fallback to /track endpoint
-            }
-
-            if (!isUsingManifestEndpoint) {
-                const lookup = await this.getTrack(id, quality);
-                if (lookup.originalTrackUrl) {
-                    streamUrl = lookup.originalTrackUrl;
-                } else {
-                    const extracted = extractStreamUrlFromManifest((lookup.info as any)?.manifest);
-                    if (extracted) streamUrl = extracted;
-                }
-                const info = lookup.info as any;
-                if (streamUrl && info) {
-                    rgInfo = {
-                        trackReplayGain: info.trackReplayGain || info.replayGain,
-                        trackPeakAmplitude: info.trackPeakAmplitude || info.peakAmplitude,
-                        albumReplayGain: info.albumReplayGain,
-                        albumPeakAmplitude: info.albumPeakAmplitude,
-                    };
-                }
-
-                const isrc = lookup.track?.isrc;
-                if (!streamUrl && isrc) {
-                    log.verbose(`  Tidal stream resolution failed; falling back to Deezer`);
-                    const deezer = await getDeezerStreamUrl(isrc, quality);
-                    if (deezer) {
-                        streamUrl = deezer.url;
-                        rgInfo = deezer.rgInfo ?? rgInfo;
-                    }
+            // 1. Unified Playback API (Amazon / Tidal / Mono). Requires a user
+            //    token; the website's default token needs browser Turnstile.
+            if (unifiedClient.isConfigured) {
+                try {
+                    result = await unifiedClient.getStreamUrl(lookup.track, quality, intent);
+                } catch (err) {
+                    log.verbose(`  Unified Playback failed: ${(err as Error).message}`);
                 }
             }
 
-            if (!streamUrl) throw new Error(`Could not resolve stream URL for track ${id}`);
-            const result: StreamResult = { url: streamUrl, rgInfo };
+            // 2. Deezer fallback by ISRC.
+            if (!result && isrc) {
+                log.verbose(`  Falling back to Deezer (ISRC ${isrc})`);
+                result = await getDeezerStreamUrl(isrc, quality);
+            }
+
+            // 3. If the requested Deezer format wasn't lossless, retry lossless.
+            if (!result && isrc) {
+                const requestedFormat = getDeezerStreamFormat(quality);
+                const losslessFormat = getDeezerStreamFormat('LOSSLESS');
+                if (requestedFormat !== losslessFormat) {
+                    log.verbose(`  Retrying Deezer with LOSSLESS`);
+                    result = await getDeezerStreamUrl(isrc, 'LOSSLESS');
+                }
+            }
+
+            // 4. Legacy HiFi instance trackManifests endpoint (last resort).
+            if (!result) {
+                log.verbose(`  Falling back to HiFi instance trackManifests`);
+                result = await getTrackManifestsStream(instances, id, quality, download, lookup);
+            }
+
+            if (!result) {
+                throw new Error(
+                    isrc
+                        ? `Could not resolve stream URL for track ${id}: Unified Playback, Deezer, and HiFi instances all failed`
+                        : `Could not resolve stream URL for track ${id}: no ISRC available for Deezer fallback`
+                );
+            }
+
             streamCache.set(cacheKey, result);
             return result;
         },

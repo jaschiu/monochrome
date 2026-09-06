@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { log } from './log.js';
-import type { ApiClient, Track, Album, RgInfo } from './api.js';
+import type { ApiClient, Track, Album, RgInfo, StreamResult } from './api.js';
 import type { Instances } from './instances.js';
 import { proxyPool } from './proxy.js';
-import { applyPostProcessing, getExtensionForQuality, isCustomFormat } from './transcode.js';
+import { applyPostProcessing, getExtensionForQuality, isCustomFormat, decryptCencMp4 } from './transcode.js';
 import { addMetadata, buildTrackMetadata } from './metadata.js';
 import { fetchLyrics, toLRC, convertLRCToRomaji } from './lyrics.js';
 import { generateM3U, generateM3U8, generateCUE, generateNFO, generateJSON } from './sidecars.js';
@@ -113,7 +113,12 @@ async function probeBestAudioStream(url: string): Promise<number | null> {
 /**
  * Download a DASH stream via ffmpeg (handles .mpd manifests).
  */
-async function downloadDashViaFfmpeg(url: string, _outputExt = 'flac', durationSec: number | null = null): Promise<Buffer> {
+async function downloadDashViaFfmpeg(
+    url: string,
+    _outputExt = 'flac',
+    durationSec: number | null = null,
+    decryption?: { key: string; keyId?: string }
+): Promise<Buffer> {
     const id = randomBytes(8).toString('hex');
     const outPath = join(tmpdir(), `mono-dash-${id}.mka`);
 
@@ -122,10 +127,14 @@ async function downloadDashViaFfmpeg(url: string, _outputExt = 'flac', durationS
         const mapArg = bestIdx != null ? `0:${bestIdx}` : '0:a';
         log.verbose(`  Selected stream index: ${bestIdx ?? 'all audio'}`);
 
+        const args = ['-y'];
+        if (decryption) {
+            args.push('-decryption_key', decryption.key);
+        }
+        args.push('-i', url, '-map', mapArg, '-c', 'copy', '-map_metadata', '-1', outPath);
+
         await new Promise<void>((resolve, reject) => {
-            const proc = execFile(
-                'ffmpeg',
-                ['-y', '-i', url, '-map', mapArg, '-c', 'copy', '-map_metadata', '-1', outPath],
+            const proc = execFile('ffmpeg', args,
                 { maxBuffer: 100 * 1024 * 1024, timeout: 300000 },
                 (err, _stdout, stderr) => {
                     if (err) {
@@ -209,48 +218,64 @@ async function downloadAudioBuffer(
 ): Promise<{ buffer: Buffer; postProcessingQuality: string; rgInfo: RgInfo | null }> {
     const downloadQuality = isCustomFormat(quality) ? 'LOSSLESS' : quality;
 
-    let streamUrl: string | null = null;
-    let rgInfo: RgInfo | null = null;
+    let stream: StreamResult | null = null;
     let postProcessingQuality: string = downloadQuality;
 
     if (preferAtmos && track?.audioModes?.includes('DOLBY_ATMOS')) {
         try {
-            const stream = await apiClient.getStreamUrl(trackId, 'DOLBY_ATMOS', true);
-            if (stream.url) {
-                streamUrl = stream.url;
-                rgInfo = stream.rgInfo;
-                postProcessingQuality = 'DOLBY_ATMOS';
-                log.verbose('  Using Dolby Atmos stream');
-            }
+            stream = await apiClient.getStreamUrl(trackId, 'DOLBY_ATMOS', true);
+            postProcessingQuality = 'DOLBY_ATMOS';
+            log.verbose('  Using Dolby Atmos stream');
         } catch (err) {
             log.verbose(`  Dolby Atmos failed, falling back: ${(err as Error).message}`);
         }
     }
 
-    if (!streamUrl) {
-        const stream = await apiClient.getStreamUrl(trackId, downloadQuality, true);
-        streamUrl = stream.url;
-        rgInfo = stream.rgInfo;
+    if (!stream) {
+        stream = await apiClient.getStreamUrl(trackId, downloadQuality, true);
         postProcessingQuality = downloadQuality;
     }
 
-    if (!streamUrl) {
+    if (!stream?.url) {
         throw new Error(`Could not resolve stream URL for track ${trackId}`);
     }
 
-    log.verbose(`  Stream URL: ${streamUrl.substring(0, 80)}...`);
+    log.verbose(
+        `  Stream: ${stream.provider ?? 'unknown'}/${stream.playbackType ?? 'direct'} ${stream.url.substring(0, 80)}...`
+    );
 
-    const fetchAudio = async (url: string): Promise<Buffer> => {
-        if (url.endsWith('.mpd') || url.includes('.mpd?') || url.includes('manifest')) {
-            const ext = getExtensionForQuality(postProcessingQuality);
-            return downloadDashViaFfmpeg(url, ext, track?.duration || null);
-        }
-        return downloadHttpStream(url);
-    };
+    const buffer = await downloadStream(stream, postProcessingQuality, track?.duration || null);
 
-    const buffer = await fetchAudio(streamUrl);
+    return { buffer, postProcessingQuality, rgInfo: stream.rgInfo };
+}
 
-    return { buffer, postProcessingQuality, rgInfo };
+async function downloadStream(
+    stream: StreamResult,
+    postProcessingQuality: string,
+    durationSec: number | null
+): Promise<Buffer> {
+    const { url, playbackType, decryptionKey, keyId, mimeType, codec } = stream;
+    const isManifest =
+        playbackType === 'dash' ||
+        playbackType === 'dash-cenc' ||
+        playbackType === 'hls' ||
+        url.endsWith('.mpd') ||
+        url.includes('.mpd?') ||
+        url.includes('.m3u8') ||
+        (mimeType && (mimeType.includes('dash') || mimeType.includes('mpegurl')));
+
+    if (isManifest) {
+        const ext = getExtensionForQuality(postProcessingQuality);
+        return downloadDashViaFfmpeg(url, ext, durationSec, decryptionKey ? { keyId, key: decryptionKey } : undefined);
+    }
+
+    if (decryptionKey) {
+        const raw = await downloadHttpStream(url);
+        const ext = codec === 'flac' || mimeType?.includes('flac') ? 'flac' : 'm4a';
+        return decryptCencMp4(raw, decryptionKey, { keyId, outputFormat: ext });
+    }
+
+    return downloadHttpStream(url);
 }
 
 /**

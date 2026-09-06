@@ -14,6 +14,11 @@ else
     CLI="npm run -s --prefix $REPO_ROOT cli --"
 fi
 OUT=$(mktemp -d "/tmp/monochrome-e2e-XXXXXX")
+
+INSTANCE_FLAGS=()
+if [ -n "${MONOCHROME_INSTANCE:-}" ]; then
+    INSTANCE_FLAGS=(--instance "$MONOCHROME_INSTANCE" --no-default-instances)
+fi
 PASS=0
 FAIL=0
 
@@ -45,13 +50,22 @@ assert_min_size() {
 }
 
 # ─────────────────────────────────────────────
+# Test 0: Metadata lookup via native Tidal
+# ─────────────────────────────────────────────
+echo ""
+echo "Test 0: Native Tidal metadata lookup"
+META=$($CLI info 491206012 -f json --no-cache "${INSTANCE_FLAGS[@]}" 2>/dev/null)
+if echo "$META" | grep -q '"title"'; then ok "info subcommand returns JSON metadata"; else fail "info subcommand metadata missing"; fi
+if echo "$META" | grep -q '"isrc"'; then ok "metadata includes ISRC"; else fail "metadata ISRC missing"; fi
+
+# ─────────────────────────────────────────────
 # Test 1: Single track download (FLAC + metadata)
 # ─────────────────────────────────────────────
 echo ""
 echo "Test 1: Single track download"
 TRACK_ID=491206012   # Rick Astley – Never Gonna Give You Up
 TRACK_DIR="$OUT/single"
-$CLI "$TRACK_ID" -o "$TRACK_DIR" --no-m3u 2>/dev/null
+$CLI "$TRACK_ID" -o "$TRACK_DIR" --no-m3u "${INSTANCE_FLAGS[@]}" 2>/dev/null
 
 assert_glob "'$TRACK_DIR'/*.flac" "FLAC file created"
 FLAC_FILE=$(find "$TRACK_DIR" -name '*.flac' | head -1)
@@ -69,9 +83,9 @@ fi
 # ─────────────────────────────────────────────
 echo ""
 echo "Test 2: Album download with sidecars"
-ALBUM_ID=75413011    # Rick Astley – Whenever You Need Somebody
+ALBUM_ID=491206011   # Rick Astley – Whenever You Need Somebody
 ALBUM_DIR="$OUT/album"
-$CLI "$ALBUM_ID" -o "$ALBUM_DIR" --cue --json 2>/dev/null
+$CLI "$ALBUM_ID" -o "$ALBUM_DIR" --cue --json "${INSTANCE_FLAGS[@]}" 2>/dev/null
 
 # Find the album subfolder
 ALBUM_SUBFOLDER=$(find "$ALBUM_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -93,7 +107,7 @@ fi
 echo ""
 echo "Test 3: Transcode to MP3 320"
 MP3_DIR="$OUT/mp3"
-$CLI "$TRACK_ID" -o "$MP3_DIR" -q FFMPEG_MP3_320 --no-m3u 2>/dev/null
+$CLI "$TRACK_ID" -o "$MP3_DIR" -q FFMPEG_MP3_320 --no-m3u "${INSTANCE_FLAGS[@]}" 2>/dev/null
 
 assert_glob "'$MP3_DIR'/*.mp3" "MP3 file created"
 MP3_FILE=$(find "$MP3_DIR" -name '*.mp3' | head -1)
