@@ -11,7 +11,8 @@ import { resolve } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { log } from '../src/log.js';
 import { resolveInstances } from '../src/instances.js';
-import { createApiClient, getToken } from '../src/api.js';
+import { createApiClient } from '../src/api.js';
+import { HiFiClient } from '#js/HiFi.ts';
 import { checkFfmpeg, isCustomFormat, CUSTOM_FORMAT_NAMES, CONTAINER_FORMAT_NAMES } from '../src/transcode.js';
 import { cacheClear, cacheStats } from '../src/cache.js';
 import { downloadTrack, downloadAlbum, detectIdType } from '../src/downloader.js';
@@ -306,10 +307,10 @@ async function run(ids: string[], opts: CliOpts): Promise<void> {
  */
 async function authenticate(): Promise<void> {
     try {
-        await getToken();
+        await HiFiClient.initialize({});
         log.success('Authenticated');
     } catch (err) {
-        log.warn(`Failed to get app token, direct Tidal fallbacks won't work: ${(err as Error).message}`);
+        log.warn(`Failed to initialize native Tidal client, direct Tidal fallbacks won't work: ${(err as Error).message}`);
     }
 }
 

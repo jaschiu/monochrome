@@ -2,43 +2,12 @@ import { cacheGet, cacheSet } from './cache.js';
 import { log } from './log.js';
 import { proxyPool } from './proxy.js';
 import type { Instances } from './instances.js';
-import { TIDAL_CLIENT_ID as CLIENT_ID, TIDAL_CLIENT_SECRET as CLIENT_SECRET } from '#js/tidal-client-ids.ts';
 import { buildTidalCoverUrl } from '#js/tidal-urls.ts';
 // @ts-expect-error - JS module without full types
 import { deezerFallbackSettings } from '#js/storage.js';
 // @ts-expect-error - JS module without full types
 import { normalizeQualityToken } from '#js/utils.js';
-
-let cachedToken: string | null = null;
-let tokenExpiry = 0;
-
-/**
- * Obtain an OAuth2 client_credentials token from Tidal.
- */
-export async function getToken({ force = false }: { force?: boolean } = {}): Promise<string> {
-    if (!force && cachedToken && Date.now() < tokenExpiry) return cachedToken;
-
-    const params = new URLSearchParams({
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        grant_type: 'client_credentials',
-    });
-
-    const res = await fetch('https://auth.tidal.com/v1/oauth2/token', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Authorization: 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64'),
-        },
-        body: params,
-    });
-
-    if (!res.ok) throw new Error(`Token request failed: ${res.status} ${await res.text()}`);
-    const data = (await res.json()) as { access_token: string; expires_in?: number };
-    cachedToken = data.access_token;
-    tokenExpiry = Date.now() + ((data.expires_in ?? 3600) - 60) * 1000;
-    return cachedToken;
-}
+import { HiFiClient } from '#js/HiFi.ts';
 
 export interface FetchOpts {
     signal?: AbortSignal;
@@ -53,6 +22,20 @@ export async function fetchWithRetry(
     relativePath: string,
     { signal, type = 'api' }: FetchOpts = {}
 ): Promise<Response> {
+    // Mirror upstream: try Tidal's native API first for non-streaming metadata.
+    if (type !== 'streaming') {
+        try {
+            return await HiFiClient.instance.query(relativePath);
+        } catch (err) {
+            const msg = (err as Error).message;
+            if (msg.includes('not initialized')) {
+                log.verbose('  Native Tidal API unavailable (HiFiClient not initialized); using instances');
+            } else {
+                log.verbose(`  Native Tidal API failed, falling back to instances: ${msg}`);
+            }
+        }
+    }
+
     const list = type === 'streaming' ? instances.streaming : instances.api;
     if (!list || list.length === 0) throw new Error(`No ${type} instances configured`);
 

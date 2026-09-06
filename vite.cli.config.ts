@@ -50,6 +50,8 @@ export default defineConfig({
             { find: /^@ffmpeg\/ffmpeg$/, replacement: path.resolve(__dirname, 'cli/stubs/ffmpeg-browser.ts') },
             { find: /^@ffmpeg\/core$/, replacement: path.resolve(__dirname, 'cli/stubs/ffmpeg-browser.ts') },
             { find: /^@ffmpeg\/util$/, replacement: path.resolve(__dirname, 'cli/stubs/ffmpeg-browser.ts') },
+            // Stub web-only Tidal audio proxy so the CLI calls Tidal directly.
+            { find: /^(\.\/|#js\/)proxy-utils(\.ts|\.js)?$/, replacement: path.resolve(__dirname, 'cli/stubs/proxy-utils.ts') },
         ],
     },
     plugins: [
