@@ -2,6 +2,7 @@
 
 import { SVG_RIGHT_ARROW } from './icons';
 import { isIos, isSafari } from './platform-detection.js';
+import { DEFAULT_INSTANCES } from './default-instances.ts';
 
 export const apiSettings = {
     STORAGE_KEY: 'monochrome-api-instances-v9',
@@ -80,9 +81,10 @@ export const apiSettings = {
 
             if (!data) {
                 console.error('Failed to load instances from all uptime APIs:', fetchError);
+                // Use the shared hardcoded fallback list (also consumed by the CLI).
                 this.defaultInstances = {
-                    api: [{ url: 'https://lol.samidy.workers.dev', version: '2.10' }],
-                    streaming: [],
+                    api: [...DEFAULT_INSTANCES.api],
+                    streaming: [...DEFAULT_INSTANCES.streaming],
                 };
                 this.instancesLoaded = true;
                 this._loadPromise = null;
@@ -107,7 +109,7 @@ export const apiSettings = {
             }
 
             if (groupedInstances.api.length === 0) {
-                groupedInstances.api = [{ url: 'https://lol.samidy.workers.dev', version: '2.10' }];
+                groupedInstances.api = DEFAULT_INSTANCES.api;
             }
 
             this.defaultInstances = groupedInstances;

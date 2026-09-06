@@ -11,6 +11,8 @@ dist
 .vitest-attachments/
 **/__screenshots__/*
 bin/
+!cli/bin/
+cli/dist/
 *.log
 .storage/
 auth_storage/

@@ -7,7 +7,7 @@ import { defineConfig } from 'eslint/config';
 
 export default defineConfig(
     {
-        ignores: ['**/dist/**', '**/node_modules/**', '**/legacy/**', '**/bin/**', '**/www/**', '**/public/lib/**'],
+        ignores: ['**/dist/**', '**/node_modules/**', '**/legacy/**', '**/www/**', '**/public/lib/**'],
     },
     js.configs.recommended,
     prettierConfig,
@@ -58,6 +58,22 @@ export default defineConfig(
             '@typescript-eslint/no-unsafe-argument': 'off',
             '@typescript-eslint/no-unsafe-return': 'off',
             '@typescript-eslint/prefer-promise-reject-errors': 'off',
+        },
+    },
+    {
+        // CLI TypeScript sources are ported from JS and intentionally lean on
+        // `any` until the downstream API responses are fully typed. Relax the
+        // strict type-checked rules here like we do for shared JS modules.
+        files: ['cli/**/*.ts'],
+        rules: {
+            '@typescript-eslint/no-unsafe-assignment': 'off',
+            '@typescript-eslint/no-unsafe-call': 'off',
+            '@typescript-eslint/no-unsafe-member-access': 'off',
+            '@typescript-eslint/no-unsafe-argument': 'off',
+            '@typescript-eslint/no-unsafe-return': 'off',
+            '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+            '@typescript-eslint/prefer-promise-reject-errors': 'off',
+            '@typescript-eslint/no-explicit-any': 'off',
         },
     }
 );

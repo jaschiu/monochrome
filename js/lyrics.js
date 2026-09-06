@@ -10,6 +10,7 @@ import {
     SVG_GLOBE,
 } from './icons.js';
 import { sidePanelManager } from './side-panel.js';
+import { containsAsianText } from './lyrics-utils.ts';
 
 const loadAmLyrics = () => {
     const images = Array.from(document.images).filter((img) => !img.complete);
@@ -31,16 +32,6 @@ if (document.readyState === 'complete') {
     loadAmLyrics();
 } else {
     window.addEventListener('load', loadAmLyrics);
-}
-
-// Check if text contains Japanese, Chinese, or Korean characters
-function containsAsianText(text) {
-    if (!text) return false;
-    // Japanese: Hiragana (3040-309F), Katakana (30A0-30FF), Kanji (4E00-9FFF, 3400-4DBF)
-    // Chinese: CJK Unified Ideographs (4E00-9FFF, 3400-4DBF)
-    // Korean: Hangul (AC00-D7AF, 1100-11FF, 3130-318F)
-    const asianRegex = /[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]/;
-    return asianRegex.test(text);
 }
 
 // Check if track has Asian text in title or artist names

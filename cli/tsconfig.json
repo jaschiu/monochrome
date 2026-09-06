@@ -1,0 +1,14 @@
+{
+    "extends": "../tsconfig.json",
+    "compilerOptions": {
+        "types": ["node"],
+        "lib": ["ESNext"],
+        "moduleResolution": "Bundler",
+        "module": "ESNext",
+        "target": "ES2022",
+        "strict": false,
+        "noEmit": true
+    },
+    "include": ["**/*.ts"],
+    "exclude": ["dist", "node_modules"]
+}
