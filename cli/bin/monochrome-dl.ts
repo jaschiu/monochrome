@@ -26,6 +26,7 @@ import {
     type TrackInfoJson,
     type AlbumInfoJson,
 } from '../src/info.js';
+import { assertNotBlocked } from '../src/content-filter.js';
 // @ts-expect-error - JS module without full types
 import { AUDIO_QUALITIES, normalizeQualityToken } from '#js/utils.js';
 
@@ -423,10 +424,12 @@ async function runInfo(ids: string[], opts: InfoOpts): Promise<void> {
 
             if (type === 'album') {
                 const { album, tracks } = await apiClient.getAlbum(item.id);
+                assertNotBlocked(album, 'album');
                 const info = buildAlbumInfo(album, tracks);
                 slots[idx] = { result: { input: item.original, type: 'album', album: info } };
             } else {
                 const { track } = await apiClient.getTrack(item.id);
+                assertNotBlocked(track, 'track');
                 const info = buildTrackInfo(track);
                 slots[idx] = { result: { input: item.original, type: 'track', track: info } };
             }
