@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { log } from './log.js';
 import type { ApiClient, Track, Album, RgInfo } from './api.js';
 import type { Instances } from './instances.js';
+import { proxyPool } from './proxy.js';
 import { applyPostProcessing, getExtensionForQuality, isCustomFormat } from './transcode.js';
 import { addMetadata, buildTrackMetadata } from './metadata.js';
 import { fetchLyrics, toLRC, convertLRCToRomaji } from './lyrics.js';
@@ -160,24 +161,17 @@ async function downloadDashViaFfmpeg(url: string, _outputExt = 'flac', durationS
  * Download audio via direct HTTP streaming.
  */
 async function downloadHttpStream(url: string): Promise<Buffer> {
-    let totalBytes: number | null = null;
-    try {
-        const head = await fetch(url, { method: 'HEAD' });
-        if (head.ok) {
-            const cl = head.headers.get('Content-Length');
-            if (cl) totalBytes = parseInt(cl, 10);
-        }
-    } catch {
-        /* ignore */
-    }
+    // Bypass the cuimp-overridden globalThis.fetch: direct CDN URLs don't need
+    // TLS impersonation and cuimp buffers the whole body before returning,
+    // which hides progress and can stall on HEAD requests through SOCKS5.
+    const nodeFetch = proxyPool.originalFetch;
 
-    const response = await fetch(url);
+    const response = await nodeFetch(url, { signal: AbortSignal.timeout(300_000) });
     if (!response.ok) throw new Error(`Stream fetch failed: ${response.status}`);
 
-    if (!totalBytes) {
-        const cl = response.headers.get('Content-Length');
-        if (cl) totalBytes = parseInt(cl, 10);
-    }
+    let totalBytes: number | null = null;
+    const cl = response.headers.get('Content-Length');
+    if (cl) totalBytes = parseInt(cl, 10);
 
     const chunks: Uint8Array[] = [];
     let received = 0;
